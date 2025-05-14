@@ -147,41 +147,44 @@ def display_images(images, titles=None, rows=1, cols=5, figsize=(15, 3), name=No
         plt.savefig(save_path)
         plt.close()
 
-
-def get_descriptors(model, dataloader, device,num_references=0, descriptor_ckpt_path=None):
-    """Calculate or load cached descriptors for the dataset"""
-    # load descriptors.pt if exists
+def get_descriptors(model, dataloader, device, num_references=0, descriptor_ckpt_path=None):
+    """Calculate or load cached descriptors for the dataset."""
+   
     print('num_references:', num_references)    
     print('descriptor_ckpt_path:', descriptor_ckpt_path)
-    loaded_weights = False
     
+    loaded_weights = False
+    descriptor_list = []
+
     if descriptor_ckpt_path and os.path.exists(descriptor_ckpt_path):
-        loaded_weights = True
         embeddings_references = torch.load(descriptor_ckpt_path)
+        loaded_weights = True
         print('Loaded descriptors from cache.')
         print('Cache size:', embeddings_references.shape)
-    descriptors = []
-    count=0
-    with torch.no_grad():
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
-            for batch in tqdm(dataloader, 'Calculating descriptors...'):
-                
-                if loaded_weights and count+len(batch[0]) <len(embeddings_references):
-                    output = embeddings_references[count:count+len(batch[0])]
-                    
-                    count+=len(batch[0])
-                else:
-                    imgs, labels = batch
-                    output = model(imgs.to(device)).cpu()
-                    
-                    count+=len(batch[0])
-                descriptors.append(output)
-    
-    # Save descriptors if checkpoint path is provided
+    else:
+        embeddings_references = None
+
+    count = 0
+
+    with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.float16):
+        for imgs, _ in tqdm(dataloader, desc='Calculating descriptors...'):
+            batch_size = imgs.size(0)
+
+            if loaded_weights and count + batch_size <= embeddings_references.size(0):
+                output = embeddings_references[count:count + batch_size]
+            else:
+                output = model(imgs.to(device)).cpu()
+
+            descriptor_list.append(output)
+            count += batch_size
+
+    descriptors = torch.cat(descriptor_list, dim=0)
+
+    # Save descriptors if needed
     if descriptor_ckpt_path and not loaded_weights:
-        torch.save(torch.cat(descriptors)[:num_references], descriptor_ckpt_path)
-        
-    return torch.cat(descriptors)
+        torch.save(descriptors[:num_references], descriptor_ckpt_path)
+
+    return descriptors
 
 
 def load_model(ckpt_path):
@@ -224,6 +227,10 @@ def run_salad(config):
     top_k = config.get('top_k', 20)
     descriptor_ckpt_path = config.get('descriptor_ckpt_path', None)
     print('descriptor_ckpt_path:', descriptor_ckpt_path)
+    # check if output_path+match_log.txt is already in the output_path
+    if os.path.isfile(os.path.join(output_path, "match_log.txt")):
+        print("Match log already exists in output path.")
+        return
     # Create output directory if it doesn't exist
     os.makedirs(output_path, exist_ok=True)
    
